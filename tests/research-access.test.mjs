@@ -247,17 +247,33 @@ test('parallel token refreshes share one request so rotation cannot race', async
   assert.deepEqual(refreshes, ['old-refresh', 'new-refresh']);
 });
 
-test('parallel searches that hit a 401 refresh the token once', async () => {
-  const { mock, refreshes, release } = await mockRefresh({ expired: false });
-  const tokens = [];
+// The error alphaXiv's MCP endpoint returns for an expired or revoked access token.
+const INVALID_AUTHORIZATION = 'Streamable HTTP error: Error POSTing to endpoint: {"error":{"message":"Invalid Authorization"}}';
+function invalidAuthorization({ withCode = true } = {}) {
+  const err = new Error(INVALID_AUTHORIZATION);
+  if (withCode) err.code = 401;
+  return err;
+}
+
+// Real alphaxiv.js + real auth.js; the MCP server rejects the listed access tokens.
+async function mockAuthedSearch({ rejected = ['old-access'], at = 'call', ok = true, toolError = null } = {}) {
+  const { mock, refreshes, release } = await mockRefresh({ expired: false, ok });
+  const clients = [];
+  const calls = [];
   class Client {
-    constructor() { this.token = null; }
     async connect(transport) {
-      tokens.push(transport.token);
-      if (transport.token === 'old-access') throw new Error('Error POSTing to endpoint (HTTP 401): Unauthorized');
+      this.token = transport.token;
+      clients.push(this);
+      if (at === 'connect' && rejected.includes(this.token)) throw invalidAuthorization({ withCode: false });
     }
-    async close() {}
-    async callTool() { return { content: [{ type: 'text', text: modern }] }; }
+    async close() { this.closed = true; }
+    async callTool(request) {
+      calls.push({ token: this.token, name: request.name });
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      if (at === 'call' && rejected.includes(this.token)) throw invalidAuthorization();
+      if (toolError) return { isError: true, content: [{ type: 'text', text: toolError }] };
+      return { content: [{ type: 'text', text: modern }] };
+    }
   }
   class StreamableHTTPClientTransport {
     constructor(_url, options) { this.token = options.requestInit.headers.Authorization.slice('Bearer '.length); }
@@ -270,12 +286,46 @@ test('parallel searches that hit a 401 refresh the token once', async () => {
     },
     globals: mock.globals,
   });
-  const all = raw.searchAll('graph networks');
+  return { raw, refreshes, release, clients, calls };
+}
+
+for (const at of ['connect', 'call']) {
+  test(`"Invalid Authorization" at ${at} time triggers one shared refresh and one retry`, async () => {
+    const { raw, refreshes, release, clients, calls } = await mockAuthedSearch({ at });
+    const all = raw.searchAll('graph networks');
+    await release();
+    assert.deepEqual(Object.keys(await all), ['semantic', 'keyword', 'agentic']);
+    assert.deepEqual(refreshes, ['old-refresh'], 'parallel failures share one refresh');
+    assert.deepEqual(clients.map((client) => client.token), ['old-access', 'new-access']);
+    if (at === 'call') assert.equal(clients[0].closed, true, 'the stale connection is closed');
+    assert.deepEqual(calls.filter((call) => call.token === 'new-access').length, 2, 'each call is retried once');
+    await raw.disconnect();
+  });
+}
+
+test('a failed refresh after "Invalid Authorization" asks the user to log in again', async () => {
+  const { raw, refreshes, release, calls } = await mockAuthedSearch({ ok: false });
+  const result = assert.rejects(raw.getPaperContent('https://arxiv.org/abs/1706.03762'), /Run `alpha login`/);
   await release();
-  assert.deepEqual(Object.keys(await all), ['semantic', 'keyword', 'agentic']);
+  await result;
+  assert.equal(refreshes.length, 1);
+  assert.equal(calls.length, 1);
+});
+
+test('a token still rejected after refreshing fails after one retry', async () => {
+  const { raw, refreshes, release, calls } = await mockAuthedSearch({ rejected: ['old-access', 'new-access'] });
+  const result = assert.rejects(raw.getPaperContent('https://arxiv.org/abs/1706.03762'), /Run `alpha login`/);
+  await release();
+  await result;
   assert.deepEqual(refreshes, ['old-refresh']);
-  assert.deepEqual(tokens, ['old-access', 'new-access']);
-  await raw.disconnect();
+  assert.deepEqual(calls.map((call) => call.token), ['old-access', 'new-access']);
+});
+
+test('tool errors mentioning authorization do not trigger a refresh', async () => {
+  const { raw, refreshes, calls } = await mockAuthedSearch({ rejected: [], toolError: 'Unauthorized: private paper' });
+  await assert.rejects(raw.getPaperContent('https://arxiv.org/abs/1706.03762'), /^Error: Unauthorized: private paper$/);
+  assert.equal(refreshes.length, 0);
+  assert.equal(calls.length, 1);
 });
 
 test('a logout during a token refresh is not undone by the refresh', async () => {

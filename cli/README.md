@@ -46,6 +46,7 @@ See the [repository README](https://github.com/Companion-Inc/alpha-hub#library) 
 
 - `alpha login` ignores a callback or pasted URL whose OAuth state is not this login's (it answers 400 and keeps waiting) instead of aborting. An `?error=` with the matching state still ends the login.
 - Token refreshes are shared within a process, so parallel requests no longer race refresh-token rotation. A refresh no longer overwrites `auth.json` if you logged out, or another process refreshed or logged in, while it was running.
+- An expired or revoked access token no longer fails alphaXiv calls. Previously, about an hour after login, long-running processes that kept one connection failed with `Streamable HTTP error: Error POSTing to endpoint: {"error":{"message":"Invalid Authorization"}}`, which was not recognized as an auth error. Now any call that gets this error refreshes the token once (shared with parallel calls), reconnects and retries once. If that fails, it reports `alphaXiv session expired. Run \`alpha login\` to sign in again.`
 - `auth.json` is replaced atomically: a new owner-only file is written next to it and renamed over it.
 
 ## 0.1.5
