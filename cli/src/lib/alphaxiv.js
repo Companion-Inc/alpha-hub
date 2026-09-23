@@ -3,9 +3,11 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { getValidToken, refreshAccessToken } from './auth.js';
 
 const ALPHAXIV_MCP_URL = 'https://api.alphaxiv.org/mcp/v1';
+const ALPHAXIV_REST_SEARCH_URL = 'https://api.alphaxiv.org/search/v2/paper/fast';
 
 let _client = null;
 let _connected = false;
+let _connecting = null;
 let _lastTransportLog = { message: '', time: 0 };
 
 function getErrorMessage(err) {
@@ -23,7 +25,6 @@ function isTransientTransportError(err) {
     message.includes('Failed to reconnect SSE stream') ||
     message.includes('Maximum reconnection attempts') ||
     message.includes('Bad Gateway') ||
-    message.includes('TypeError: terminated') ||
     message.includes('terminated')
   );
 }
@@ -44,9 +45,15 @@ function logTransportError(err) {
   process.stderr.write(`[alpha] alphaXiv MCP error: ${message}\n`);
 }
 
+// Concurrent callers (searchAll, `--mode all`) share one connection; separate
+// connections were never closed by disconnect() and kept the process alive.
 async function getClient() {
   if (_client && _connected) return _client;
+  _connecting ??= connectClient().finally(() => { _connecting = null; });
+  return await _connecting;
+}
 
+async function connectClient() {
   const token = await getValidToken();
   if (!token) {
     throw new Error('Not logged in. Run `alpha login` first.');
@@ -136,7 +143,31 @@ function discoverArgs(query, difficulty) {
 }
 
 async function discoverPapers(query, difficulty) {
-  return await callTool('discover_papers', discoverArgs(query, difficulty));
+  const args = discoverArgs(query, difficulty);
+  try {
+    return await callTool('discover_papers', args);
+  } catch (err) {
+    // Only fall back when the MCP server no longer offers the tool; argument,
+    // auth and transport errors must surface.
+    if (!/\bTool discover_papers not found\b/i.test(getErrorMessage(err))) throw err;
+    return await searchRestFast(args.question);
+  }
+}
+
+// alphaXiv's public REST search; returns [{ link, paperId, title, snippet }].
+async function searchRestFast(query) {
+  const url = new URL(ALPHAXIV_REST_SEARCH_URL);
+  url.searchParams.set('q', query);
+  url.searchParams.set('includePrivate', 'false');
+  const token = await getValidToken();
+  const response = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`alphaXiv REST search failed (${response.status}): ${text || response.statusText}`);
+  }
+  return await response.json();
 }
 
 // The legacy `embedding_similarity_search`, `full_text_papers_search`, and

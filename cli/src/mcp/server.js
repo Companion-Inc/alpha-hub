@@ -22,9 +22,9 @@ const server = new McpServer({
 
 server.tool(
   'alpha_search',
-  'Search research papers via alphaXiv. Supports semantic (embedding), keyword, and agentic search modes.',
+  'Search research papers via alphaXiv. semantic and keyword run a standard search; agentic runs a slower multi-round search.',
   {
-    query: z.string().describe('Search query — use 2-3 sentences for semantic mode, keywords for keyword mode'),
+    query: z.string().describe('What you are looking for, in plain terms'),
     mode: z.enum(['semantic', 'keyword', 'agentic']).optional().describe('Search mode (default: semantic)'),
   },
   async (args) => handleSearch(args),

@@ -1,6 +1,6 @@
 {
   "name": "@companion-ai/alpha-hub",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Unofficial alphaXiv-powered CLI and library for research agents",
   "type": "module",
   "repository": {
@@ -52,16 +52,6 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "chalk": "^6.0.0",
     "commander": "^15.0.0",
-    "zod": "^4.5.4"
-  },
-  "overrides": {
-    "@hono/node-server": "2.1.1",
-    "hono": "4.13.7",
-    "body-parser": "2.3.0",
-    "express-rate-limit": "8.7.0",
-    "fast-uri": "3.1.7",
-    "ip-address": "10.7.0",
-    "path-to-regexp": "8.4.2",
-    "qs": "6.16.0"
+    "zod": "^4.6.5"
   }
 }

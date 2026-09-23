@@ -20,7 +20,7 @@ const load = (specifier) => import(pathToFileURL(require.resolve(specifier)));
 
 try {
   assert.equal(manifest.name, packageName);
-  assert.equal(manifest.version, '0.1.4');
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
   for (const subpath of Object.keys(manifest.exports)) {
     const specifier = subpath === '.' ? packageName : packageName + subpath.slice(1);
     assert.ok(require.resolve(specifier));
@@ -33,7 +33,7 @@ try {
   const version = execFileSync(process.execPath, [resolve(root, 'bin/alpha'), '--cli-version'], {
     encoding: 'utf8', timeout: 10_000,
   });
-  assert.equal(version.trim(), '0.1.4');
+  assert.equal(version.trim(), manifest.version);
   const runCli = (...args) => execFileSync(process.execPath, [resolve(root, 'bin/alpha'), ...args], {
     encoding: 'utf8', timeout: 10_000,
   });
@@ -72,7 +72,7 @@ try {
   });
   try {
     await client.connect(transport);
-    assert.equal(client.getServerVersion().version, '0.1.4');
+    assert.equal(client.getServerVersion().version, manifest.version);
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((tool) => tool.name).sort(),
       ['alpha_annotate', 'alpha_ask', 'alpha_code', 'alpha_get', 'alpha_search']);

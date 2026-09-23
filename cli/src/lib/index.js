@@ -15,7 +15,7 @@ import {
   writeAnnotation,
 } from './annotations.js';
 import { getUserName, isLoggedIn, login, logout } from './auth.js';
-import { normalizePaperId, toArxivUrl } from './papers.js';
+import { isArxivId, normalizePaperId, toArxivUrl } from './papers.js';
 
 export {
   disconnect,
@@ -45,6 +45,14 @@ function parsePublishedAt(fragment) {
   return match ? match[1].trim() : null;
 }
 
+function paperUrls(id) {
+  if (!id) return { arxivUrl: null, alphaXivUrl: null };
+  return {
+    arxivUrl: isArxivId(id) ? `https://arxiv.org/abs/${id}` : null,
+    alphaXivUrl: `https://www.alphaxiv.org/overview/${id}`,
+  };
+}
+
 function cleanSearchField(value) {
   if (typeof value !== 'string') return null;
   const normalized = value
@@ -70,8 +78,7 @@ function normalizeStructuredSearchResult(entry, index, includeRaw) {
     authors: cleanSearchField(typeof entry.authors === 'string' ? entry.authors : null),
     abstract: cleanSearchField(snippet),
     arxivId: cleanSearchField(paperId),
-    arxivUrl: paperId ? `https://arxiv.org/abs/${paperId}` : null,
-    alphaXivUrl: paperId ? `https://www.alphaxiv.org/overview/${paperId}` : null,
+    ...paperUrls(cleanSearchField(paperId)),
     ...(includeRaw ? { raw: JSON.stringify(entry) } : {}),
   };
 }
@@ -123,8 +130,7 @@ export function parsePaperSearchResults(text, options = {}) {
         organizations: cleanSearchField(organizations || null),
         abstract: cleanSearchField(abstract),
         arxivId: cleanSearchField(arxivId),
-        arxivUrl: arxivId ? `https://arxiv.org/abs/${arxivId.trim()}` : null,
-        alphaXivUrl: arxivId ? `https://www.alphaxiv.org/overview/${arxivId.trim()}` : null,
+        ...paperUrls(cleanSearchField(arxivId)),
         ...(includeRaw ? { raw: block } : {}),
       };
     }
@@ -150,8 +156,7 @@ export function parsePaperSearchResults(text, options = {}) {
       authors: cleanSearchField(fieldValue('- Authors:')),
       abstract: cleanSearchField(fieldValue('- Abstract:')),
       arxivId: cleanSearchField(arxivId),
-      arxivUrl: arxivId ? `https://arxiv.org/abs/${arxivId}` : null,
-      alphaXivUrl: arxivId ? `https://www.alphaxiv.org/overview/${arxivId}` : null,
+      ...paperUrls(cleanSearchField(arxivId)),
       ...(includeRaw ? { raw: block } : {}),
     };
   });
