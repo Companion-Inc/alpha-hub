@@ -62,6 +62,7 @@ async function connectClient() {
   _client = new Client({ name: 'alpha', version: '0.1.0' });
 
   _client.onerror = (err) => {
+    if (isAuthError(err)) return; // callTool refreshes and retries
     if (isTransientTransportError(err)) {
       _connected = false;
     }
@@ -82,34 +83,43 @@ async function connectClient() {
   return _client;
 }
 
-async function callTool(name, args) {
-  let lastError = null;
+// alphaXiv answers an expired or revoked token with HTTP 401 and
+// {"error":{"message":"Invalid Authorization"}}, surfaced by the SDK as a
+// StreamableHTTPError with code 401. Tool results are never auth errors.
+function isAuthError(err) {
+  if (err?.toolResult) return false;
+  return err?.code === 401 || err?.name === 'UnauthorizedError' ||
+    /Invalid Authorization|\b401\b|Unauthorized/.test(getErrorMessage(err));
+}
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+const SESSION_EXPIRED = 'alphaXiv session expired. Run `alpha login` to sign in again.';
+
+// Close only the connection that failed; a parallel caller may already have replaced it.
+async function dropClient(client) {
+  if (client && _client !== client) return;
+  const stale = _client;
+  _client = null;
+  _connected = false;
+  if (stale) {
+    stale.onerror = () => {};
+    try { await stale.close(); } catch {}
+  }
+}
+
+async function callTool(name, args) {
+  let refreshed = false;
+  let transientRetries = 0;
+
+  while (true) {
     let client;
     try {
       client = await getClient();
-    } catch (err) {
-      if (err.message?.includes('401') || err.message?.includes('Unauthorized')) {
-        const newToken = await refreshAccessToken();
-        if (newToken) {
-          _client = null;
-          _connected = false;
-          client = await getClient();
-        } else {
-          throw new Error('Session expired. Run `alpha login` to re-authenticate.');
-        }
-      } else {
-        throw err;
-      }
-    }
-
-    try {
       const result = await client.callTool({ name, arguments: args });
 
       if (result.isError) {
-        const text = result.content?.[0]?.text || 'Unknown error';
-        throw new Error(text);
+        const toolError = new Error(result.content?.[0]?.text || 'Unknown error');
+        toolError.toolResult = true;
+        throw toolError;
       }
 
       const text = result.content?.[0]?.text;
@@ -121,15 +131,20 @@ async function callTool(name, args) {
         return text;
       }
     } catch (err) {
-      lastError = err;
-      if (!isTransientTransportError(err) || attempt === 2) {
+      if (isAuthError(err)) {
+        // Refresh once (shared with any parallel caller) and retry once.
+        if (refreshed) throw new Error(SESSION_EXPIRED);
+        refreshed = true;
+        await dropClient(client);
+        if (!(await refreshAccessToken())) throw new Error(SESSION_EXPIRED);
+        continue;
+      }
+      if (!isTransientTransportError(err) || ++transientRetries > 2) {
         throw err;
       }
-      await disconnect();
+      await dropClient(client);
     }
   }
-
-  throw lastError ?? new Error('alphaXiv MCP call failed');
 }
 
 function discoverArgs(query, difficulty) {

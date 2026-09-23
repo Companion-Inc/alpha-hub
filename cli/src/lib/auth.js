@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { execSync } from 'node:child_process';
@@ -30,11 +30,18 @@ function loadAuth() {
   }
 }
 
+// Write a fresh 0600 file and rename it over auth.json, so readers never see a
+// partial file and files created 0644 by older versions are replaced.
 function saveAuth(data) {
   const path = getAuthPath();
-  writeFileSync(path, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
-  // `mode` only applies on creation; tighten files written by older versions too.
-  chmodSync(path, 0o600);
+  const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    renameSync(tmp, path);
+  } catch (err) {
+    try { unlinkSync(tmp); } catch {}
+    throw err;
+  }
 }
 
 export function getAccessToken() {
@@ -151,15 +158,17 @@ function startCallbackServer() {
   });
 }
 
-// Validates a redirect back to REDIRECT_URI and returns its authorization code.
-function codeFromRedirect(url, expectedState) {
+// A redirect whose state is not this attempt's is ignored, never allowed to end the login.
+function stateMatches(url, expectedState) {
   const returnedState = url.searchParams.get('state');
-  if (!returnedState || returnedState !== expectedState) throw new Error('OAuth state mismatch');
+  return Boolean(returnedState) && returnedState === expectedState;
+}
+
+// For a state-matched redirect: the code, or null if there is none. Throws on `?error=`.
+function codeFromRedirect(url) {
   const error = url.searchParams.get('error');
   if (error) throw new Error(`OAuth error: ${error}`);
-  const code = url.searchParams.get('code');
-  if (!code) throw new Error('No authorization code in the redirect URL');
-  return code;
+  return url.searchParams.get('code') || null;
 }
 
 function parsePastedRedirect(line) {
@@ -205,18 +214,18 @@ function waitForCode(server, expectedState) {
         return;
       }
 
-      let code;
-      try {
-        code = codeFromRedirect(url, expectedState);
-      } catch (err) {
-        res.writeHead(400, { 'Content-Type': 'text/html' });
-        res.end(ERROR_HTML);
-        finish(err);
-        return;
+      let code = null;
+      let error = null;
+      if (stateMatches(url, expectedState)) {
+        try {
+          code = codeFromRedirect(url);
+        } catch (err) {
+          error = err;
+        }
       }
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(SUCCESS_HTML);
-      finish(null, code);
+      res.writeHead(code ? 200 : 400, { 'Content-Type': 'text/html' });
+      res.end(code ? SUCCESS_HTML : ERROR_HTML);
+      if (code || error) finish(error, code);
     });
 
     if (process.stdin?.isTTY) {
@@ -227,11 +236,29 @@ function waitForCode(server, expectedState) {
       rl = createInterface({ input: process.stdin });
       rl.on('line', (line) => {
         if (settled || !line.trim()) return;
+        const retry = (message) => process.stderr.write(
+          `Could not use that URL: ${message}. Paste the full redirect URL from this login attempt.\n`,
+        );
+        let url;
+        let code;
         try {
-          finish(null, codeFromRedirect(parsePastedRedirect(line), expectedState));
+          url = parsePastedRedirect(line);
         } catch (err) {
-          process.stderr.write(`Could not use that URL: ${err.message}. Paste the full redirect URL from this login attempt.\n`);
+          retry(err.message);
+          return;
         }
+        if (!stateMatches(url, expectedState)) {
+          retry('OAuth state mismatch');
+          return;
+        }
+        try {
+          code = codeFromRedirect(url);
+        } catch (err) {
+          finish(err);
+          return;
+        }
+        if (code) finish(null, code);
+        else retry('No authorization code in the redirect URL');
       });
     }
   });
@@ -260,7 +287,24 @@ async function exchangeCode(code, clientId, codeVerifier) {
   return await res.json();
 }
 
-export async function refreshAccessToken() {
+let refreshing = null;
+
+// One refresh at a time per process: refresh tokens rotate, so parallel refreshes
+// with the same token would invalidate each other.
+export function refreshAccessToken() {
+  refreshing ??= refreshTokens().finally(() => { refreshing = null; });
+  return refreshing;
+}
+
+// If auth.json no longer holds the refresh token we used (logout, or another
+// process refreshed or logged in), defer to what is stored rather than overwrite it.
+function tokenIfSuperseded(usedRefreshToken) {
+  const current = loadAuth();
+  if (current?.refresh_token === usedRefreshToken) return undefined;
+  return current?.access_token || null;
+}
+
+async function refreshTokens() {
   const auth = loadAuth();
   if (!auth?.refresh_token || !auth?.client_id) return null;
 
@@ -276,9 +320,11 @@ export async function refreshAccessToken() {
     body: body.toString(),
   });
 
-  if (!res.ok) return null;
+  if (!res.ok) return tokenIfSuperseded(auth.refresh_token) ?? null;
 
   const tokens = await res.json();
+  const superseded = tokenIfSuperseded(auth.refresh_token);
+  if (superseded !== undefined) return superseded;
   saveAuth({
     ...auth,
     access_token: tokens.access_token,
@@ -340,13 +386,33 @@ export async function getValidToken() {
   return null;
 }
 
+// Asks alphaXiv whether the stored login still works. Resolves to
+// { loggedIn: true, name } or { loggedIn: false, reason: 'missing' | 'expired' };
+// throws when alphaXiv cannot be reached or answers unexpectedly.
+export async function verifyLogin() {
+  if (!getAccessToken()) return { loggedIn: false, reason: 'missing' };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const token = attempt === 0 ? await getValidToken() : await refreshAccessToken();
+    if (!token) break;
+    const res = await fetch(USERINFO_ENDPOINT, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if ([400, 401, 403].includes(res.status)) continue;
+    if (!res.ok) throw new Error(`alphaXiv answered ${res.status} ${res.statusText}`.trim());
+    const info = await res.json();
+    return { loggedIn: true, name: info?.name || info?.preferred_username || getUserName() };
+  }
+  return { loggedIn: false, reason: 'expired' };
+}
+
 export function isLoggedIn() {
   return !!getAccessToken();
 }
 
 export function logout() {
   try {
-    writeFileSync(getAuthPath(), '{}', 'utf8');
+    saveAuth({});
   } catch {
   }
 }

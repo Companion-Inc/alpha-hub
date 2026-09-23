@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { getUserName, login, isLoggedIn, logout } from '../lib/auth.js';
+import { login, isLoggedIn, logout, verifyLogin } from '../lib/auth.js';
 
 export function registerLoginCommand(program) {
   program
@@ -34,14 +34,22 @@ export function registerStatusCommand(program) {
   program
     .command('status')
     .description('Show alphaXiv authentication status')
-    .action(() => {
-      if (!isLoggedIn()) {
-        process.stderr.write(chalk.dim('Not logged in to alphaXiv.\n'));
+    .action(async () => {
+      let status;
+      try {
+        status = await verifyLogin();
+      } catch (err) {
+        process.stderr.write(`${chalk.red('Could not verify alphaXiv login:')} ${err.message}\n`);
         process.exitCode = 1;
         return;
       }
-
-      const name = getUserName();
-      console.log(chalk.green(name ? `Logged in to alphaXiv as ${name}` : 'Logged in to alphaXiv'));
+      if (!status.loggedIn) {
+        process.stderr.write(status.reason === 'expired'
+          ? 'alphaXiv session expired. Run `alpha login` to sign in again.\n'
+          : 'Not logged in to alphaXiv. Run `alpha login`.\n');
+        process.exitCode = 1;
+        return;
+      }
+      console.log(chalk.green(status.name ? `Logged in to alphaXiv as ${status.name}` : 'Logged in to alphaXiv'));
     });
 }

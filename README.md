@@ -70,7 +70,7 @@ alpha ask 1706.03762 "What datasets were used for evaluation?"
 | `alpha annotate <id> --clear` | Remove a note |
 | `alpha annotate --list` | List all notes |
 | `alpha login` | Sign in with alphaXiv |
-| `alpha status` | Show alphaXiv authentication status |
+| `alpha status` | Check the alphaXiv login with alphaXiv (exit 1 if missing, expired, or unverifiable) |
 | `alpha logout` | Sign out |
 
 All commands accept `--json` for machine-readable output.
@@ -139,7 +139,7 @@ await disconnect();
 | Import | Exports |
 |--------|---------|
 | `@companion-ai/alpha-hub/lib` | `searchPapers`, `parsePaperSearchResults`, `getPaper`, `askPaper`, `readPaperCode`, `annotatePaper`, `getPaperAnnotation`, `clearPaperAnnotation`, `listPaperAnnotations`, `normalizePaperId`, `login`, `logout`, `isLoggedIn`, `getUserName`, `disconnect`, and the raw `searchByEmbedding`, `searchByKeyword`, `agenticSearch`, `searchAll`, `readGithubRepo`, `readAnnotation`, `writeAnnotation`, `clearAnnotation`, `listAnnotations` |
-| `@companion-ai/alpha-hub/lib/auth` | `login`, `logout`, `isLoggedIn`, `getAccessToken`, `getValidToken`, `refreshAccessToken`, `getUserId`, `getUserName` |
+| `@companion-ai/alpha-hub/lib/auth` | `login`, `logout`, `isLoggedIn` (stored tokens only), `verifyLogin` (asks alphaXiv), `getAccessToken`, `getValidToken`, `refreshAccessToken`, `getUserId`, `getUserName` |
 | `@companion-ai/alpha-hub/lib/alphaxiv` | Raw alphaXiv MCP calls: `getPaperContent`, `answerPdfQuery`, `readGithubRepo`, the search functions, `disconnect` |
 | `@companion-ai/alpha-hub/lib/papers` | `normalizePaperId`, `toArxivUrl`, `isArxivId` |
 | `@companion-ai/alpha-hub/lib/annotations` | `readAnnotation`, `writeAnnotation`, `clearAnnotation`, `listAnnotations` |

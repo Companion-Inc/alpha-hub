@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 // Execute the real source body with mocked import boundaries; never call live auth.
 export async function loadSource(relative, { stubs = {}, globals = {} } = {}) {
   const context = createContext({
-    URL, URLSearchParams, Buffer, console, setTimeout, clearTimeout,
+    URL, URLSearchParams, Buffer, console, setTimeout, clearTimeout, AbortSignal,
     process: { env: {}, stderr: { write() {} } },
     fetch: () => { throw new Error('Unexpected network request'); },
     ...globals,
