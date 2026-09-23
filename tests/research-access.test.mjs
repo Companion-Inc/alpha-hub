@@ -14,7 +14,7 @@ function mockAuth({ state = 'valid', callback = true, platform = 'darwin', env =
   const commands = [];
   const stderr = [];
   let opened;
-  let callbackResponse;
+  const statuses = [];
   let rl;
   let serverClosed = false;
   const server = new EventEmitter();
@@ -25,8 +25,18 @@ function mockAuth({ state = 'valid', callback = true, platform = 'darwin', env =
       existsSync: (file) => files.has(file),
       mkdirSync() {},
       readFileSync: (file) => { if (!files.has(file)) throw new Error('ENOENT'); return files.get(file); },
-      writeFileSync: (file, content) => files.set(file, content),
-      chmodSync: (file, mode) => modes.set(file, mode),
+      writeFileSync: (file, content, options) => {
+        if (options?.flag === 'wx' && files.has(file)) throw new Error('EEXIST');
+        files.set(file, content);
+        modes.set(file, options?.mode);
+      },
+      renameSync: (from, to) => {
+        files.set(to, files.get(from));
+        modes.set(to, modes.get(from));
+        files.delete(from);
+        modes.delete(from);
+      },
+      unlinkSync: (file) => files.delete(file),
     },
     'node:os': { homedir: () => '/mock-home', platform: () => platform },
     'node:http': { createServer: () => server },
@@ -44,12 +54,18 @@ function mockAuth({ state = 'valid', callback = true, platform = 'darwin', env =
         if (failCommands.some((prefix) => command.startsWith(prefix))) throw new Error('not installed');
         opened = new URL(command.match(/"(https:[^"]+)"$/)[1]);
         if (!callback) return;
+        const valid = `/callback?code=mock-code&state=${opened.searchParams.get('state')}`;
+        // A foreign or stateless callback is answered and ignored; the real one follows.
+        const requests = {
+          valid: [valid],
+          wrong: ['/callback?code=stolen&state=wrong', valid],
+          missing: ['/callback?code=stolen', valid],
+          error: [`/callback?error=access_denied&state=${opened.searchParams.get('state')}`],
+        }[state];
         queueMicrotask(() => {
-          const url = new URL('http://127.0.0.1:9876/callback?code=mock-code');
-          if (state !== 'missing') url.searchParams.set('state', state === 'valid' ? opened.searchParams.get('state') : 'wrong');
-          server.emit('request', { url: url.pathname + url.search }, {
-            writeHead: (status) => { callbackResponse = status; }, end() {},
-          });
+          for (const url of requests) {
+            server.emit('request', { url }, { writeHead: (status) => { statuses.push(status); }, end() {} });
+          }
         });
       },
     },
@@ -74,7 +90,7 @@ function mockAuth({ state = 'valid', callback = true, platform = 'darwin', env =
   };
   return {
     stubs, globals: { fetch, process }, files, modes, calls, commands,
-    opened: () => opened, callbackStatus: () => callbackResponse,
+    opened: () => opened, callbackStatus: () => statuses.at(-1), statuses: () => statuses,
     readline: () => rl, serverClosed: () => serverClosed, stderr: () => stderr.join(''),
   };
 }
@@ -118,15 +134,24 @@ test('OAuth login executes current registration, authorize, token and userinfo f
 });
 
 for (const state of ['wrong', 'missing']) {
-  test(`OAuth ${state} callback state fails before token exchange or auth writes`, async () => {
+  test(`OAuth ${state}-state callback is rejected without ending the login`, async () => {
     const mock = mockAuth({ state });
     const auth = await loadSource('../../cli/src/lib/auth.js', mock);
-    await assert.rejects(auth.login(), /OAuth state mismatch/);
-    assert.equal(mock.calls.length, 1);
-    assert.equal(mock.files.size, 0);
-    assert.equal(mock.callbackStatus(), 400);
+    await auth.login();
+    assert.deepEqual(mock.statuses(), [400, 200]);
+    assert.equal(new URLSearchParams(mock.calls[1].body).get('code'), 'mock-code', 'the foreign code is never exchanged');
   });
 }
+
+test('an OAuth error with this attempt\'s state ends the login before any token exchange', async () => {
+  const mock = mockAuth({ state: 'error' });
+  const auth = await loadSource('../../cli/src/lib/auth.js', mock);
+  await assert.rejects(auth.login(), /OAuth error: access_denied/);
+  assert.deepEqual(mock.statuses(), [400]);
+  assert.equal(mock.calls.length, 1);
+  assert.equal(mock.files.size, 0);
+  assert.equal(mock.serverClosed(), true);
+});
 
 test('headless login completes from a pasted redirect URL and still checks state', async () => {
   const mock = mockAuth({ platform: 'linux', tty: true });
@@ -163,6 +188,131 @@ test('browser callback still wins in a terminal and closes the paste prompt', as
   assert.equal(mock.readline().closed, true);
   assert.equal(mock.serverClosed(), true);
   assert.equal(new URLSearchParams(mock.calls[1].body).get('code'), 'mock-code');
+});
+
+test('a pasted OAuth error with this attempt\'s state ends the login', async () => {
+  const mock = mockAuth({ platform: 'linux', tty: true });
+  const auth = await loadSource('../../cli/src/lib/auth.js', mock);
+  const pending = auth.login();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const state = printedAuthUrl(mock).searchParams.get('state');
+  mock.readline().emit('line', 'http://127.0.0.1:9876/callback?error=access_denied&state=wrong');
+  mock.readline().emit('line', `http://127.0.0.1:9876/callback?error=access_denied&state=${state}`);
+  await assert.rejects(pending, /OAuth error: access_denied/);
+  assert.match(mock.stderr(), /Could not use that URL: OAuth state mismatch/);
+  assert.equal(mock.calls.length, 1);
+});
+
+const AUTH_PATH = '/mock-home/.ahub/auth.json';
+
+// Stored credentials plus a token endpoint whose refresh responses the test releases.
+async function mockRefresh({ expired = true, ok = true } = {}) {
+  const mock = mockAuth();
+  mock.files.set(AUTH_PATH, JSON.stringify({
+    client_id: 'mock-client', access_token: 'old-access', refresh_token: 'old-refresh',
+    expires_at: expired ? Date.now() - 1000 : Date.now() + 3_600_000, user_name: 'Mock User',
+  }));
+  const refreshes = [];
+  const pending = [];
+  mock.globals.fetch = async (url, options) => {
+    assert.equal(url, 'https://api.alphaxiv.org/auth/oauth2/token');
+    refreshes.push(new URLSearchParams(options.body).get('refresh_token'));
+    await new Promise((resolve) => pending.push(resolve));
+    return {
+      ok, status: ok ? 200 : 400,
+      json: async () => ({ access_token: 'new-access', refresh_token: 'new-refresh', expires_in: 3600 }),
+    };
+  };
+  const auth = await loadSource('../../cli/src/lib/auth.js', mock);
+  const release = async () => {
+    while (!pending.length) await new Promise((resolve) => setTimeout(resolve, 0));
+    pending.shift()();
+  };
+  const stored = () => JSON.parse(mock.files.get(AUTH_PATH));
+  return { mock, auth, refreshes, release, stored };
+}
+
+test('parallel token refreshes share one request so rotation cannot race', async () => {
+  const { auth, refreshes, release, stored } = await mockRefresh();
+  const results = Promise.all([auth.getValidToken(), auth.getValidToken(), auth.refreshAccessToken()]);
+  await release();
+  assert.deepEqual(await results, ['new-access', 'new-access', 'new-access']);
+  assert.deepEqual(refreshes, ['old-refresh']);
+  assert.equal(stored().refresh_token, 'new-refresh');
+  assert.equal(stored().user_name, 'Mock User');
+  // The next refresh uses the rotated token.
+  const next = auth.refreshAccessToken();
+  await release();
+  await next;
+  assert.deepEqual(refreshes, ['old-refresh', 'new-refresh']);
+});
+
+test('parallel searches that hit a 401 refresh the token once', async () => {
+  const { mock, refreshes, release } = await mockRefresh({ expired: false });
+  const tokens = [];
+  class Client {
+    constructor() { this.token = null; }
+    async connect(transport) {
+      tokens.push(transport.token);
+      if (transport.token === 'old-access') throw new Error('Error POSTing to endpoint (HTTP 401): Unauthorized');
+    }
+    async close() {}
+    async callTool() { return { content: [{ type: 'text', text: modern }] }; }
+  }
+  class StreamableHTTPClientTransport {
+    constructor(_url, options) { this.token = options.requestInit.headers.Authorization.slice('Bearer '.length); }
+  }
+  const raw = await loadSource('../../cli/src/lib/alphaxiv.js', {
+    stubs: {
+      ...mock.stubs,
+      '@modelcontextprotocol/sdk/client/index.js': { Client },
+      '@modelcontextprotocol/sdk/client/streamableHttp.js': { StreamableHTTPClientTransport },
+    },
+    globals: mock.globals,
+  });
+  const all = raw.searchAll('graph networks');
+  await release();
+  assert.deepEqual(Object.keys(await all), ['semantic', 'keyword', 'agentic']);
+  assert.deepEqual(refreshes, ['old-refresh']);
+  assert.deepEqual(tokens, ['old-access', 'new-access']);
+  await raw.disconnect();
+});
+
+test('a logout during a token refresh is not undone by the refresh', async () => {
+  const { auth, release, stored } = await mockRefresh();
+  const token = auth.getValidToken();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  auth.logout();
+  await release();
+  assert.equal(await token, null);
+  assert.deepEqual(stored(), {});
+  assert.equal(auth.isLoggedIn(), false);
+});
+
+for (const ok of [true, false]) {
+  test(`a refresh ${ok ? 'success' : 'failure'} defers to tokens another process stored meanwhile`, async () => {
+    const { mock, auth, release, stored } = await mockRefresh({ ok });
+    const token = auth.refreshAccessToken();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const other = { client_id: 'mock-client', access_token: 'other-access', refresh_token: 'other-refresh', expires_at: Date.now() + 3_600_000 };
+    mock.files.set(AUTH_PATH, JSON.stringify(other));
+    await release();
+    assert.equal(await token, 'other-access');
+    assert.deepEqual(stored(), other);
+  });
+}
+
+test('auth.json is replaced by renaming a new owner-only file, leaving no temp files', async () => {
+  const { mock, auth, release } = await mockRefresh();
+  mock.modes.set(AUTH_PATH, 0o644);
+  const token = auth.refreshAccessToken();
+  await release();
+  await token;
+  assert.equal(mock.modes.get(AUTH_PATH), 0o600);
+  assert.deepEqual([...mock.files.keys()], [AUTH_PATH]);
+  auth.logout();
+  assert.equal(mock.modes.get(AUTH_PATH), 0o600);
+  assert.deepEqual([...mock.files.keys()], [AUTH_PATH]);
 });
 
 for (const [label, options, expected] of [

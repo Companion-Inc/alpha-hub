@@ -42,6 +42,12 @@ This package exposes:
 
 See the [repository README](https://github.com/Companion-Inc/alpha-hub#library) for the full export list.
 
+## 0.1.6
+
+- `alpha login` ignores a callback or pasted URL whose OAuth state is not this login's (it answers 400 and keeps waiting) instead of aborting. An `?error=` with the matching state still ends the login.
+- Token refreshes are shared within a process, so parallel requests no longer race refresh-token rotation. A refresh no longer overwrites `auth.json` if you logged out, or another process refreshed or logged in, while it was running.
+- `auth.json` is replaced atomically: a new owner-only file is written next to it and renamed over it.
+
 ## 0.1.5
 
 - `alpha login` accepts the pasted redirect URL when the browser cannot reach the local callback, for example on headless servers, SSH sessions, containers, and WSL. The OAuth state check still applies. On Linux without a display, `alpha login` no longer tries to open a browser. On WSL it tries `wslview` and then the Windows default browser. The login wait is now 5 minutes.
