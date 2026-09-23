@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { searchByEmbedding, searchByKeyword, agenticSearch, disconnect } from '../lib/alphaxiv.js';
+import { searchByEmbedding, searchByKeyword, agenticSearch, searchAll, disconnect } from '../lib/alphaxiv.js';
 import { output, error, info } from '../lib/output.js';
 
 function formatResults(data) {
@@ -10,7 +10,7 @@ function formatResults(data) {
 function describeMode(mode) {
   switch (mode) {
     case 'keyword':
-      return 'keyword full-text';
+      return 'keyword';
     case 'agentic':
       return 'agentic';
     case 'both':
@@ -39,18 +39,11 @@ export function registerSearchCommand(program) {
         } else if (opts.mode === 'agentic') {
           results = await agenticSearch(query);
         } else if (opts.mode === 'both') {
-          const [semantic, keyword] = await Promise.all([
-            searchByEmbedding(query),
-            searchByKeyword(query),
-          ]);
-          results = { semantic, keyword };
+          // Semantic and keyword are the same discover_papers request.
+          const semantic = await searchByEmbedding(query);
+          results = { semantic, keyword: semantic };
         } else if (opts.mode === 'all') {
-          const [semantic, keyword, agentic] = await Promise.all([
-            searchByEmbedding(query),
-            searchByKeyword(query),
-            agenticSearch(query),
-          ]);
-          results = { semantic, keyword, agentic };
+          results = await searchAll(query);
         } else {
           results = await searchByEmbedding(query);
         }

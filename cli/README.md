@@ -4,7 +4,7 @@ Unofficial alphaXiv-powered CLI and library for research agents.
 
 ## Install
 
-Requires Node.js **22.22.0 or newer**. Version 0.1.4 uses MCP SDK 1.30, Chalk 6, Commander 15, and Zod 4.
+Requires Node.js **22.22.0 or newer**.
 
 ```bash
 npm install -g @companion-ai/alpha-hub
@@ -30,20 +30,22 @@ alpha ask 1706.03762 "What datasets were used for evaluation?"
 alpha code https://github.com/openai/gpt-2 /
 ```
 
+`alpha login` opens a browser and waits for the redirect to `http://127.0.0.1:9876/callback`. On a remote server, over SSH, or in a container, open the printed URL in any browser. After you sign in, paste the address the browser ends on (`http://127.0.0.1:9876/callback?code=...`) into the waiting terminal.
+
 ## Package Exports
 
 This package exposes:
 
 - `alpha` CLI
-- `alpha-mcp` CLI
-- library helpers from `@companion-ai/alpha-hub/lib`
+- `alpha-mcp` CLI (stdio MCP server)
+- library helpers from `@companion-ai/alpha-hub/lib` (`searchPapers`, `getPaper`, `askPaper`, annotations, auth), plus `/lib/auth`, `/lib/alphaxiv`, `/lib/papers`, and `/lib/annotations`
 
-Repository:
-https://github.com/Companion-Inc/alpha-hub
+See the [repository README](https://github.com/Companion-Inc/alpha-hub#library) for the full export list.
 
-## 0.1.4: paper-access repairs
+## 0.1.5
 
-- The package is published as `@companion-ai/alpha-hub` from `Companion-Inc/alpha-hub` (0.1.4 was also briefly published as `@advaitpaliwal/alpha-hub`); CLI names and library export paths remain compatible.
-- Login uses alphaXiv's current OAuth issuer, requests OpenID scopes, and validates callback state.
-- Existing search functions use `discover_papers` with array keywords and numeric difficulty instead of removed tools. Combined modes retain their result keys.
-- Paper results support current discovery text, legacy text, and structured JSON; paper Q&A uses the maintained `paper`/`queries` payload.
+- `alpha login` accepts the pasted redirect URL when the browser cannot reach the local callback, for example on headless servers, SSH sessions, containers, and WSL. The OAuth state check still applies. On Linux without a display, `alpha login` no longer tries to open a browser. On WSL it tries `wslview` and then the Windows default browser. The login wait is now 5 minutes.
+- `~/.ahub/auth.json` is written with owner-only permissions.
+- `alpha get` and `alpha ask` accept alphaXiv-hosted paper IDs from search results, such as `2607.some-paper-title`. Search results give these papers `arxivUrl: null`.
+- If alphaXiv removes the `discover_papers` MCP tool, search falls back to alphaXiv's REST search.
+- `alpha search --mode both` and `--mode all` no longer hang after printing results, and no longer send duplicate requests. Library callers that ran searches in parallel also share one connection now.

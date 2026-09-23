@@ -26,6 +26,12 @@ npm install -g @companion-ai/alpha-hub
 
 The commands remain `alpha` and `alpha-mcp`. Library consumers should use the `@companion-ai/alpha-hub` dependency and import scope; export paths such as `/lib` and `/lib/auth` are unchanged.
 
+## Login
+
+`alpha login` signs in with alphaXiv's OAuth server and stores tokens in `~/.ahub/auth.json` (readable only by you). It opens your browser and waits for alphaXiv to redirect back to `http://127.0.0.1:9876/callback`.
+
+**Remote servers, SSH, containers, WSL:** if the browser runs on a different machine, it cannot reach that callback. Open the printed login URL in any browser, sign in, and copy the address the browser ends on (`http://127.0.0.1:9876/callback?code=...&state=...`, even if the page fails to load). Paste it into the waiting `alpha login` and press Enter. The pasted URL must come from the same login attempt. Login waits up to 5 minutes.
+
 ## How It Works
 
 Alpha is designed for your coding agent to use (not for you to use!). You can prompt your agent to use it (e.g., "Use the CLI command `alpha` to search for papers on LoRA. Run `alpha` to see how it works.")
@@ -56,7 +62,7 @@ alpha ask 1706.03762 "What datasets were used for evaluation?"
 
 | Command | Purpose |
 |---------|---------|
-| `alpha search <query>` | Search papers (semantic, keyword, or agentic) |
+| `alpha search <query>` | Search papers (`--mode semantic\|keyword\|both\|agentic\|all`) |
 | `alpha get <id\|url>` | Fetch paper report + local annotation |
 | `alpha ask <id\|url> <question>` | Ask a question about a paper |
 | `alpha code <github-url> [path]` | Read files from a paper repository |
@@ -87,15 +93,16 @@ Alpha Hub is designed for a loop where agents get better over time.
 
 ## Key Features
 
-### Semantic Search
+### Paper Search
 
-Three search modes — semantic (embedding similarity), keyword (exact terms), and agentic (multi-turn retrieval) — so agents find the right papers regardless of how they phrase the query. `--mode all` runs all three in parallel for maximum recall.
+Search uses alphaXiv's `discover_papers` tool. `semantic` (default) and `keyword` run the standard search; alphaXiv no longer has separate embedding and full-text tools, so both names give the same results. `agentic` runs a slower multi-round search. `both` and `all` return results under the `semantic`, `keyword`, and `agentic` keys.
+
+Results show the paper ID. Most are arXiv IDs. Papers hosted only on alphaXiv have IDs such as `2607.some-paper-title`. `alpha get` and `alpha ask` accept both.
 
 ```bash
-alpha search "methods for reducing hallucination in LLMs"  # semantic
-alpha search "LoRA" --mode keyword                          # keyword
+alpha search "speculative decoding"
 alpha search "retrieval-augmented generation for QA" --mode agentic
-alpha search "alignment of vision language models" --mode all
+alpha search "alignment of vision language models" --mode all --json
 ```
 
 ### Paper Q&A
@@ -118,6 +125,26 @@ Read files directly from a paper's GitHub repository when the implementation mat
 alpha code https://github.com/openai/gpt-2 /
 alpha code https://github.com/openai/gpt-2 src/model.py
 ```
+
+## Library
+
+```js
+import { searchPapers, getPaper, askPaper, disconnect } from '@companion-ai/alpha-hub/lib';
+
+const { results } = await searchPapers('speculative decoding'); // [{ rank, title, arxivId, arxivUrl, alphaXivUrl, abstract, ... }]
+const paper = await getPaper(results[0].arxivId);                // { paperId, url, alphaXivUrl, content, annotation }
+await disconnect();
+```
+
+| Import | Exports |
+|--------|---------|
+| `@companion-ai/alpha-hub/lib` | `searchPapers`, `parsePaperSearchResults`, `getPaper`, `askPaper`, `readPaperCode`, `annotatePaper`, `getPaperAnnotation`, `clearPaperAnnotation`, `listPaperAnnotations`, `normalizePaperId`, `login`, `logout`, `isLoggedIn`, `getUserName`, `disconnect`, and the raw `searchByEmbedding`, `searchByKeyword`, `agenticSearch`, `searchAll`, `readGithubRepo`, `readAnnotation`, `writeAnnotation`, `clearAnnotation`, `listAnnotations` |
+| `@companion-ai/alpha-hub/lib/auth` | `login`, `logout`, `isLoggedIn`, `getAccessToken`, `getValidToken`, `refreshAccessToken`, `getUserId`, `getUserName` |
+| `@companion-ai/alpha-hub/lib/alphaxiv` | Raw alphaXiv MCP calls: `getPaperContent`, `answerPdfQuery`, `readGithubRepo`, the search functions, `disconnect` |
+| `@companion-ai/alpha-hub/lib/papers` | `normalizePaperId`, `toArxivUrl`, `isArxivId` |
+| `@companion-ai/alpha-hub/lib/annotations` | `readAnnotation`, `writeAnnotation`, `clearAnnotation`, `listAnnotations` |
+
+Call `disconnect()` when you are done to close the alphaXiv MCP connection. `alpha-mcp` runs the same tools as a stdio MCP server (`alpha_search`, `alpha_get`, `alpha_ask`, `alpha_code`, `alpha_annotate`).
 
 ## License
 

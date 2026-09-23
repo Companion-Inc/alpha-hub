@@ -33,6 +33,7 @@ export declare function getPaper(
 ): Promise<{
 	paperId: string;
 	url: string;
+	alphaXivUrl: string;
 	content: unknown;
 	annotation: unknown;
 }>;
@@ -43,6 +44,7 @@ export declare function askPaper(
 ): Promise<{
 	paperId: string;
 	url: string;
+	alphaXivUrl: string;
 	question: string;
 	answer: unknown;
 }>;

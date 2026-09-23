@@ -7,26 +7,43 @@ import { loadSource } from './helpers/load-source.mjs';
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const modern = '1. [ID=1706.03762] **Attention Is All You Need**. Published 2017-06-12 by Example Lab: Transformer abstract.';
 
-function mockAuth({ state = 'valid' } = {}) {
+function mockAuth({ state = 'valid', callback = true, platform = 'darwin', env = {}, tty = false, failCommands = [] } = {}) {
   const files = new Map();
+  const modes = new Map();
   const calls = [];
+  const commands = [];
+  const stderr = [];
   let opened;
   let callbackResponse;
+  let rl;
+  let serverClosed = false;
   const server = new EventEmitter();
-  server.listen = (_port, _host, callback) => callback();
-  server.close = () => {};
+  server.listen = (_port, _host, done) => done();
+  server.close = () => { serverClosed = true; };
   const stubs = {
     'node:fs': {
       existsSync: (file) => files.has(file),
       mkdirSync() {},
       readFileSync: (file) => { if (!files.has(file)) throw new Error('ENOENT'); return files.get(file); },
       writeFileSync: (file, content) => files.set(file, content),
+      chmodSync: (file, mode) => modes.set(file, mode),
     },
-    'node:os': { homedir: () => '/mock-home', platform: () => 'darwin' },
+    'node:os': { homedir: () => '/mock-home', platform: () => platform },
     'node:http': { createServer: () => server },
+    'node:readline': {
+      createInterface: () => {
+        rl = new EventEmitter();
+        rl.closed = false;
+        rl.close = () => { rl.closed = true; };
+        return rl;
+      },
+    },
     'node:child_process': {
       execSync: (command) => {
-        opened = new URL(command.match(/^open "(.+)"$/)[1]);
+        commands.push(command);
+        if (failCommands.some((prefix) => command.startsWith(prefix))) throw new Error('not installed');
+        opened = new URL(command.match(/"(https:[^"]+)"$/)[1]);
+        if (!callback) return;
         queueMicrotask(() => {
           const url = new URL('http://127.0.0.1:9876/callback?code=mock-code');
           if (state !== 'missing') url.searchParams.set('state', state === 'valid' ? opened.searchParams.get('state') : 'wrong');
@@ -50,7 +67,21 @@ function mockAuth({ state = 'valid' } = {}) {
     }
     throw new Error(`Unexpected endpoint: ${url}`);
   };
-  return { stubs, globals: { fetch }, files, calls, opened: () => opened, callbackStatus: () => callbackResponse };
+  const process = {
+    env,
+    stderr: { write: (text) => { stderr.push(text); } },
+    ...(tty ? { stdin: { isTTY: true } } : {}),
+  };
+  return {
+    stubs, globals: { fetch, process }, files, modes, calls, commands,
+    opened: () => opened, callbackStatus: () => callbackResponse,
+    readline: () => rl, serverClosed: () => serverClosed, stderr: () => stderr.join(''),
+  };
+}
+
+// The authorize URL printed to stderr, as a user would copy it.
+function printedAuthUrl(mock) {
+  return new URL(mock.stderr().match(/https:\/\/api\.alphaxiv\.org\/auth\/oauth2\/authorize\S+/)[0]);
 }
 
 test('OAuth login executes current registration, authorize, token and userinfo flow with PKCE/state', async () => {
@@ -81,6 +112,9 @@ test('OAuth login executes current registration, authorize, token and userinfo f
   assert.equal(mock.calls.at(-1).url, 'https://api.alphaxiv.org/auth/oauth2/token');
   assert.equal(new URLSearchParams(mock.calls.at(-1).body).get('grant_type'), 'refresh_token');
   assert.ok(mock.files.has('/mock-home/.ahub/auth.json'));
+  assert.equal(mock.modes.get('/mock-home/.ahub/auth.json'), 0o600);
+  assert.equal(mock.readline(), undefined, 'no paste prompt without a terminal');
+  assert.equal(printedAuthUrl(mock).href, opened.href);
 });
 
 for (const state of ['wrong', 'missing']) {
@@ -94,11 +128,76 @@ for (const state of ['wrong', 'missing']) {
   });
 }
 
-async function mockSearch(payload = modern, failure = null) {
+test('headless login completes from a pasted redirect URL and still checks state', async () => {
+  const mock = mockAuth({ platform: 'linux', tty: true });
+  const auth = await loadSource('../../cli/src/lib/auth.js', mock);
+  const pending = auth.login();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(mock.commands, [], 'no browser is launched without a display');
+  const authUrl = printedAuthUrl(mock);
+  const state = authUrl.searchParams.get('state');
+  assert.match(mock.stderr(), /paste the\s+full URL/);
+  const rl = mock.readline();
+  for (const line of [
+    'not a url at all',
+    'https://www.alphaxiv.org/',
+    `http://127.0.0.1:9876/callback?code=stolen&state=wrong`,
+    `http://127.0.0.1:9876/callback?state=${state}`,
+  ]) rl.emit('line', line);
+  assert.equal(mock.calls.length, 1, 'bad pastes never reach the token endpoint');
+  assert.equal((mock.stderr().match(/Could not use that URL/g) || []).length, 4);
+  assert.match(mock.stderr(), /OAuth state mismatch/);
+  rl.emit('line', `  127.0.0.1:9876/callback?code=pasted-code&state=${state}  `);
+  const result = await pending;
+  assert.equal(result.userInfo.name, 'Mock User');
+  assert.equal(new URLSearchParams(mock.calls[1].body).get('code'), 'pasted-code');
+  assert.equal(rl.closed, true);
+  assert.equal(mock.serverClosed(), true);
+  assert.ok(mock.files.has('/mock-home/.ahub/auth.json'));
+});
+
+test('browser callback still wins in a terminal and closes the paste prompt', async () => {
+  const mock = mockAuth({ tty: true });
+  const auth = await loadSource('../../cli/src/lib/auth.js', mock);
+  await auth.login();
+  assert.equal(mock.readline().closed, true);
+  assert.equal(mock.serverClosed(), true);
+  assert.equal(new URLSearchParams(mock.calls[1].body).get('code'), 'mock-code');
+});
+
+for (const [label, options, expected] of [
+  ['macOS', { platform: 'darwin' }, ['open']],
+  ['Windows', { platform: 'win32' }, ['start ""']],
+  ['Linux desktop', { platform: 'linux', env: { DISPLAY: ':0' } }, ['xdg-open']],
+  ['WSL with wslview', { platform: 'linux', env: { WSL_DISTRO_NAME: 'Ubuntu' } }, ['wslview']],
+  ['WSL without wslview', { platform: 'linux', env: { WSL_INTEROP: '/run/WSL/1_interop' }, failCommands: ['wslview'] },
+    ['wslview', 'rundll32.exe url.dll,FileProtocolHandler']],
+]) {
+  test(`login opens the browser on ${label}`, async () => {
+    const mock = mockAuth(options);
+    const auth = await loadSource('../../cli/src/lib/auth.js', mock);
+    await auth.login();
+    assert.deepEqual(mock.commands.map((command) => command.slice(0, command.indexOf(' "https:'))), expected);
+    for (const command of mock.commands) assert.ok(command.endsWith(`"${mock.opened().href}"`), command);
+  });
+}
+
+async function mockSearch(payload = modern, failure = null, rest = { ok: true }) {
   const calls = [];
+  const requests = [];
+  const fetch = async (url, options = {}) => {
+    requests.push({ url: new URL(url), headers: options.headers });
+    return {
+      ok: rest.ok, status: rest.ok ? 200 : 503, statusText: 'Unavailable',
+      text: async () => 'Unavailable',
+      json: async () => [{ link: '/abs/2401.00001', paperId: '2401.00001', title: 'REST Paper', snippet: 'REST abstract.' }],
+    };
+  };
+  const clients = [];
   class Client {
-    async connect() {}
-    async close() {}
+    constructor() { clients.push(this); }
+    async connect() { await new Promise((resolve) => setTimeout(resolve, 1)); }
+    async close() { this.closed = true; }
     async callTool(request) {
       calls.push(plain(request));
       if (failure) throw new Error(failure);
@@ -113,9 +212,9 @@ async function mockSearch(payload = modern, failure = null) {
       getUserName: () => null, isLoggedIn: () => true, login() {}, logout() {},
     },
   };
-  const lib = await loadSource('../../cli/src/lib/index.js', { stubs });
-  const raw = await loadSource('../../cli/src/lib/alphaxiv.js', { stubs });
-  return { lib, raw, calls, stubs };
+  const lib = await loadSource('../../cli/src/lib/index.js', { stubs, globals: { fetch } });
+  const raw = await loadSource('../../cli/src/lib/alphaxiv.js', { stubs, globals: { fetch } });
+  return { lib, raw, calls, requests, stubs, clients };
 }
 
 test('search wrappers call discover_papers with array keywords/numeric difficulty, never removed tools', async () => {
@@ -131,10 +230,33 @@ test('search wrappers call discover_papers with array keywords/numeric difficult
   assert.equal(calls.length, 3);
 });
 
+test('REST search is used only when the MCP server no longer offers discover_papers', async () => {
+  const missing = await mockSearch(modern, 'MCP error -32602: Tool discover_papers not found');
+  const parsed = await missing.lib.searchPapers(' graph networks ', 'keyword');
+  assert.equal(parsed.results[0].arxivId, '2401.00001');
+  assert.equal(parsed.results[0].title, 'REST Paper');
+  assert.equal(missing.requests.length, 1);
+  const { url, headers } = missing.requests[0];
+  assert.equal(url.origin + url.pathname, 'https://api.alphaxiv.org/search/v2/paper/fast');
+  assert.equal(url.searchParams.get('q'), 'graph networks');
+  assert.equal(url.searchParams.get('includePrivate'), 'false');
+  assert.equal(headers.Authorization, 'Bearer mock-access');
+  const down = await mockSearch(modern, 'Tool discover_papers not found', { ok: false });
+  await assert.rejects(down.raw.searchByKeyword('graph'), /REST search failed \(503\)/);
+  for (const message of ['MCP error -32602: Invalid arguments', '401 Unauthorized', 'Tool different_tool not found']) {
+    const other = await mockSearch(modern, message);
+    await assert.rejects(other.raw.searchByKeyword('graph'));
+    assert.equal(other.requests.length, 0, message);
+  }
+});
+
 test('search all and both retain compatibility keys and deduplicate broad requests', async () => {
-  const { lib, raw, calls } = await mockSearch();
+  const { lib, raw, calls, clients } = await mockSearch();
   assert.deepEqual(Object.keys(await raw.searchAll('graph')), ['semantic', 'keyword', 'agentic']);
   assert.equal(calls.length, 2);
+  assert.equal(clients.length, 1, 'parallel searches share one MCP connection');
+  await raw.disconnect();
+  assert.equal(clients[0].closed, true);
   const both = await lib.searchPapers('graph', 'both');
   assert.deepEqual(Object.keys(both), ['query', 'mode', 'semantic', 'keyword']);
   assert.equal(calls.length, 3);
@@ -203,6 +325,31 @@ test('discovery source URLs and vote/view metrics preserve normalized paper fiel
     assert.equal(result.likes, metadata.includes('votes') ? 5 : null);
     assert.equal(result.visits, metadata.includes('views') ? 9 : null);
     assert.equal(result.abstract, 'Synthetic abstract.');
+  }
+});
+
+test('alphaXiv-hosted paper IDs route to alphaXiv, not arXiv', async () => {
+  const { lib } = await mockSearch();
+  const hosted = '2607.hardware-aware-dynamic-speculative-decoding';
+  const result = lib.parsePaperSearchResults(
+    `1. [ID=${hosted}] **Synthetic Hosted Paper** (https://www.alphaxiv.org/abs/${hosted}). Published 2026-07-10 · 48 votes · 199 views: Synthetic abstract.`,
+  ).results[0];
+  assert.equal(result.arxivId, hosted);
+  assert.equal(result.arxivUrl, null);
+  assert.equal(result.alphaXivUrl, `https://www.alphaxiv.org/overview/${hosted}`);
+  assert.equal(lib.parsePaperSearchResults([{ paperId: hosted, title: 'Hosted' }]).results[0].arxivUrl, null);
+  const papers = await loadSource('../../cli/src/lib/papers.js');
+  for (const [input, id, url] of [
+    ['1706.03762', '1706.03762', 'https://arxiv.org/abs/1706.03762'],
+    ['1706.03762v5', '1706.03762v5', 'https://arxiv.org/abs/1706.03762v5'],
+    ['hep-th/9901001', 'hep-th/9901001', 'https://arxiv.org/abs/hep-th/9901001'],
+    ['https://arxiv.org/pdf/1706.03762', '1706.03762', 'https://arxiv.org/abs/1706.03762'],
+    ['https://www.alphaxiv.org/abs/1706.03762v2', '1706.03762', 'https://arxiv.org/abs/1706.03762'],
+    [hosted, hosted, `https://www.alphaxiv.org/abs/${hosted}`],
+    [`https://www.alphaxiv.org/overview/${hosted}`, hosted, `https://www.alphaxiv.org/overview/${hosted}`],
+  ]) {
+    assert.equal(papers.normalizePaperId(input), id, input);
+    assert.equal(papers.toArxivUrl(input), url, input);
   }
 });
 
