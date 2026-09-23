@@ -386,6 +386,26 @@ export async function getValidToken() {
   return null;
 }
 
+// Asks alphaXiv whether the stored login still works. Resolves to
+// { loggedIn: true, name } or { loggedIn: false, reason: 'missing' | 'expired' };
+// throws when alphaXiv cannot be reached or answers unexpectedly.
+export async function verifyLogin() {
+  if (!getAccessToken()) return { loggedIn: false, reason: 'missing' };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const token = attempt === 0 ? await getValidToken() : await refreshAccessToken();
+    if (!token) break;
+    const res = await fetch(USERINFO_ENDPOINT, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if ([400, 401, 403].includes(res.status)) continue;
+    if (!res.ok) throw new Error(`alphaXiv answered ${res.status} ${res.statusText}`.trim());
+    const info = await res.json();
+    return { loggedIn: true, name: info?.name || info?.preferred_username || getUserName() };
+  }
+  return { loggedIn: false, reason: 'expired' };
+}
+
 export function isLoggedIn() {
   return !!getAccessToken();
 }

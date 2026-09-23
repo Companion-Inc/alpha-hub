@@ -7,5 +7,9 @@ export declare function login(): Promise<{
 	userInfo: unknown;
 }>;
 export declare function getValidToken(): Promise<string | null>;
+export declare function verifyLogin(): Promise<
+	| { loggedIn: true; name: string | null }
+	| { loggedIn: false; reason: "missing" | "expired" }
+>;
 export declare function isLoggedIn(): boolean;
 export declare function logout(): void;

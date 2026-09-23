@@ -328,6 +328,86 @@ test('tool errors mentioning authorization do not trigger a refresh', async () =
   assert.equal(calls.length, 1);
 });
 
+// Stored login plus a userinfo endpoint answering from `statuses` in order.
+async function mockStatus({ stored = true, statuses = [200], refreshOk = true, networkError = false } = {}) {
+  const mock = mockAuth();
+  if (stored) {
+    mock.files.set(AUTH_PATH, JSON.stringify({
+      client_id: 'mock-client', access_token: 'old-access', refresh_token: 'old-refresh',
+      expires_at: Date.now() + 3_600_000, user_name: 'Stored Name',
+    }));
+  }
+  const requests = [];
+  mock.globals.fetch = async (url, options = {}) => {
+    requests.push({ url, token: options.headers?.Authorization?.slice('Bearer '.length) });
+    if (url === 'https://api.alphaxiv.org/auth/oauth2/token') {
+      return { ok: refreshOk, status: refreshOk ? 200 : 400, json: async () => ({ access_token: 'new-access', refresh_token: 'new-refresh', expires_in: 3600 }) };
+    }
+    assert.equal(url, 'https://api.alphaxiv.org/auth/oauth2/userinfo');
+    if (networkError) throw new Error('fetch failed');
+    const status = statuses.shift();
+    return { ok: status === 200, status, statusText: status === 500 ? 'Internal Server Error' : '', json: async () => ({ sub: 'mock-user', name: 'Server Name' }) };
+  };
+  const auth = await loadSource('../../cli/src/lib/auth.js', mock);
+  return { auth, requests };
+}
+
+test('verifyLogin checks the stored login with alphaXiv userinfo', async () => {
+  const cases = [
+    [{ stored: false }, { loggedIn: false, reason: 'missing' }, []],
+    [{}, { loggedIn: true, name: 'Server Name' }, ['userinfo:old-access']],
+    [{ statuses: [401, 200] }, { loggedIn: true, name: 'Server Name' }, ['userinfo:old-access', 'token', 'userinfo:new-access']],
+    [{ statuses: [401], refreshOk: false }, { loggedIn: false, reason: 'expired' }, ['userinfo:old-access', 'token']],
+    [{ statuses: [403, 400] }, { loggedIn: false, reason: 'expired' }, ['userinfo:old-access', 'token', 'userinfo:new-access']],
+  ];
+  for (const [options, expected, requests] of cases) {
+    const mock = await mockStatus(options);
+    assert.deepEqual(plain(await mock.auth.verifyLogin()), expected, JSON.stringify(options));
+    assert.deepEqual(mock.requests.map((r) => r.url.endsWith('/token') ? 'token' : `userinfo:${r.token}`), requests);
+  }
+  await assert.rejects((await mockStatus({ networkError: true })).auth.verifyLogin(), /fetch failed/);
+  await assert.rejects((await mockStatus({ statuses: [500] })).auth.verifyLogin(), /answered 500/);
+  // The library's local check is unchanged: a stored but dead token still counts.
+  const dead = await mockStatus({ statuses: [401], refreshOk: false });
+  assert.equal(dead.auth.isLoggedIn(), true);
+});
+
+test('alpha status reports the verified state and exits 1 unless logged in', async () => {
+  const run = async (verifyLogin) => {
+    const out = [];
+    const err = [];
+    const process = { env: {}, stderr: { write: (text) => { err.push(text); } } };
+    const command = await loadSource('../../cli/src/commands/login.js', {
+      stubs: {
+        chalk: { default: { dim: (v) => v, green: (v) => v, red: (v) => v } },
+        [new URL('../cli/src/lib/auth.js', import.meta.url).href]: {
+          login() {}, logout() {}, isLoggedIn: () => true, getUserName: () => null, verifyLogin,
+        },
+      },
+      globals: { process, console: { log: (text) => out.push(text) } },
+    });
+    const actions = {};
+    const program = {
+      command(name) { this.current = name; return this; }, description() { return this; },
+      action(fn) { actions[this.current] = fn; return this; },
+    };
+    command.registerStatusCommand(program);
+    await actions.status();
+    return { out: out.join(''), err: err.join(''), exitCode: process.exitCode };
+  };
+  assert.deepEqual(await run(async () => ({ loggedIn: true, name: 'Server Name' })),
+    { out: 'Logged in to alphaXiv as Server Name', err: '', exitCode: undefined });
+  const expired = await run(async () => ({ loggedIn: false, reason: 'expired' }));
+  assert.match(expired.err, /session expired\. Run `alpha login`/);
+  assert.equal(expired.exitCode, 1);
+  const missing = await run(async () => ({ loggedIn: false, reason: 'missing' }));
+  assert.match(missing.err, /Not logged in to alphaXiv\. Run `alpha login`/);
+  assert.equal(missing.exitCode, 1);
+  const offline = await run(async () => { throw new Error('fetch failed'); });
+  assert.match(offline.err, /Could not verify alphaXiv login: fetch failed/);
+  assert.equal(offline.exitCode, 1);
+});
+
 test('a logout during a token refresh is not undone by the refresh', async () => {
   const { auth, release, stored } = await mockRefresh();
   const token = auth.getValidToken();
