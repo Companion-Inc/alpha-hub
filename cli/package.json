@@ -1,16 +1,16 @@
 {
-  "name": "@advaitpaliwal/alpha-hub",
+  "name": "@companion-ai/alpha-hub",
   "version": "0.1.4",
   "description": "Unofficial alphaXiv-powered CLI and library for research agents",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/advaitpaliwal/alpha-hub.git",
+    "url": "git+https://github.com/Companion-Inc/alpha-hub.git",
     "directory": "cli"
   },
-  "homepage": "https://github.com/advaitpaliwal/alpha-hub#readme",
+  "homepage": "https://github.com/Companion-Inc/alpha-hub#readme",
   "bugs": {
-    "url": "https://github.com/advaitpaliwal/alpha-hub/issues"
+    "url": "https://github.com/Companion-Inc/alpha-hub/issues"
   },
   "exports": {
     ".": "./src/index.js",

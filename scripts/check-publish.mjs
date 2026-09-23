@@ -1,11 +1,11 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-export const packageName = '@advaitpaliwal/alpha-hub';
+export const packageName = '@companion-ai/alpha-hub';
 
 export function assertPublishContext(env, manifest) {
-  if (env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_REPOSITORY !== 'advaitpaliwal/alpha-hub') {
-    throw new Error('Publication is restricted to advaitpaliwal/alpha-hub main.');
+  if (env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_REPOSITORY !== 'Companion-Inc/alpha-hub') {
+    throw new Error('Publication is restricted to Companion-Inc/alpha-hub main.');
   }
   if (manifest.name !== packageName || !/^\d+\.\d+\.\d+$/.test(manifest.version)) {
     throw new Error('Unexpected package identity or non-stable version.');

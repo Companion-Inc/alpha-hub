@@ -10,21 +10,21 @@ Research agents hallucinate paper details and forget what they learn in a sessio
 Requires Node.js **22.22.0 or newer**.
 
 ```bash
-npm install -g @advaitpaliwal/alpha-hub
+npm install -g @companion-ai/alpha-hub
 alpha login                        # sign in with alphaXiv
 alpha status                       # show whether alphaXiv auth is present
 alpha search "attention mechanism" # search papers
 alpha get 1706.03762               # fetch paper report
 ```
 
-If you installed the old scoped package, migrate once:
+If you installed the interim `@advaitpaliwal/alpha-hub` package, migrate once:
 
 ```bash
-npm uninstall -g @companion-ai/alpha-hub
-npm install -g @advaitpaliwal/alpha-hub
+npm uninstall -g @advaitpaliwal/alpha-hub
+npm install -g @companion-ai/alpha-hub
 ```
 
-The commands remain `alpha` and `alpha-mcp`. Library consumers should update their dependency and import scope to `@advaitpaliwal/alpha-hub`; export paths such as `/lib` and `/lib/auth` are unchanged.
+The commands remain `alpha` and `alpha-mcp`. Library consumers should use the `@companion-ai/alpha-hub` dependency and import scope; export paths such as `/lib` and `/lib/auth` are unchanged.
 
 ## How It Works
 

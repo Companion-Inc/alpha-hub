@@ -12,7 +12,7 @@ const originalHome = process.env.HOME;
 process.env.HOME = home;
 globalThis.fetch = () => { throw new Error('Network forbidden in consumer smoke'); };
 const require = createRequire(resolve('package.json'));
-const packageName = '@advaitpaliwal/alpha-hub';
+const packageName = '@companion-ai/alpha-hub';
 const entry = require.resolve(packageName);
 const root = resolve(dirname(entry), '..');
 const manifest = JSON.parse(readFileSync(resolve(root, 'package.json')));
@@ -101,7 +101,7 @@ try {
   } finally {
     await client.close();
   }
-  console.log('PASS: personal exports, Commander CLI/help/JSON flags, mock paper parsing, isolated annotations, MCP handshake/Zod schemas/valid and invalid calls');
+  console.log('PASS: package exports, Commander CLI/help/JSON flags, mock paper parsing, isolated annotations, MCP handshake/Zod schemas/valid and invalid calls');
 } finally {
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;

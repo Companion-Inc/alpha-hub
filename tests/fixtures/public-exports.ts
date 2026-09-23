@@ -3,8 +3,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
   searchPapers, parsePaperSearchResults, askPaper, annotatePaper, normalizePaperId,
-} from '@advaitpaliwal/alpha-hub/lib';
-import { isLoggedIn } from '@advaitpaliwal/alpha-hub/lib/auth';
+} from '@companion-ai/alpha-hub/lib';
+import { isLoggedIn } from '@companion-ai/alpha-hub/lib/auth';
 
 const loggedIn: boolean = isLoggedIn();
 const paperId: string = normalizePaperId('2401.00001');
