@@ -256,8 +256,9 @@ function invalidAuthorization({ withCode = true } = {}) {
 }
 
 // Real alphaxiv.js + real auth.js; the MCP server rejects the listed access tokens.
-async function mockAuthedSearch({ rejected = ['old-access'], at = 'call', ok = true, toolError = null } = {}) {
+async function mockAuthedSearch({ rejected = ['old-access'], at = 'call', ok = true, toolError = null, env } = {}) {
   const { mock, refreshes, release } = await mockRefresh({ expired: false, ok });
+  if (env) Object.assign(mock.globals.process.env, env);
   const clients = [];
   const calls = [];
   class Client {
@@ -675,4 +676,11 @@ test('existing CLI and MCP search entrypoints execute the adapter without changi
   }
   assert.ok(calls.length > 0);
   assert.ok(calls.every((call) => call.name === 'discover_papers'));
+});
+
+test('login hints name the command the user runs when a host CLI wraps alpha', async () => {
+  const { raw, release } = await mockAuthedSearch({ ok: false, env: { ALPHA_HUB_CLI: 'feynman alpha' } });
+  const result = assert.rejects(raw.getPaperContent('https://arxiv.org/abs/1706.03762'), /Run `feynman alpha login`/);
+  await release();
+  await result;
 });

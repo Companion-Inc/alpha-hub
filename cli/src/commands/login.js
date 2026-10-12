@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import { login, isLoggedIn, logout, verifyLogin } from '../lib/auth.js';
+import { cliCommand } from '../lib/cli-name.js';
 
 export function registerLoginCommand(program) {
   program
@@ -8,7 +9,7 @@ export function registerLoginCommand(program) {
     .action(async () => {
       try {
         if (isLoggedIn()) {
-          process.stderr.write(chalk.dim('Already logged in. Use `alpha logout` to sign out first.\n'));
+          process.stderr.write(chalk.dim(`Already logged in. Use \`${cliCommand('logout')}\` to sign out first.\n`));
         }
         const { userInfo } = await login();
         const name = userInfo?.name || userInfo?.email || 'unknown';
@@ -45,8 +46,8 @@ export function registerStatusCommand(program) {
       }
       if (!status.loggedIn) {
         process.stderr.write(status.reason === 'expired'
-          ? 'alphaXiv session expired. Run `alpha login` to sign in again.\n'
-          : 'Not logged in to alphaXiv. Run `alpha login`.\n');
+          ? `alphaXiv session expired. Run \`${cliCommand('login')}\` to sign in again.\n`
+          : `Not logged in to alphaXiv. Run \`${cliCommand('login')}\`.\n`);
         process.exitCode = 1;
         return;
       }

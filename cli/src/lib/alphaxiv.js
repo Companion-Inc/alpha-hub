@@ -1,6 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { getValidToken, refreshAccessToken } from './auth.js';
+import { cliCommand } from './cli-name.js';
 
 const ALPHAXIV_MCP_URL = 'https://api.alphaxiv.org/mcp/v1';
 const ALPHAXIV_REST_SEARCH_URL = 'https://api.alphaxiv.org/search/v2/paper/fast';
@@ -56,7 +57,7 @@ async function getClient() {
 async function connectClient() {
   const token = await getValidToken();
   if (!token) {
-    throw new Error('Not logged in. Run `alpha login` first.');
+    throw new Error(`Not logged in. Run \`${cliCommand('login')}\` first.`);
   }
 
   _client = new Client({ name: 'alpha', version: '0.1.0' });
@@ -92,7 +93,7 @@ function isAuthError(err) {
     /Invalid Authorization|\b401\b|Unauthorized/.test(getErrorMessage(err));
 }
 
-const SESSION_EXPIRED = 'alphaXiv session expired. Run `alpha login` to sign in again.';
+const sessionExpired = () => `alphaXiv session expired. Run \`${cliCommand('login')}\` to sign in again.`;
 
 // Close only the connection that failed; a parallel caller may already have replaced it.
 async function dropClient(client) {
@@ -133,10 +134,10 @@ async function callTool(name, args) {
     } catch (err) {
       if (isAuthError(err)) {
         // Refresh once (shared with any parallel caller) and retry once.
-        if (refreshed) throw new Error(SESSION_EXPIRED);
+        if (refreshed) throw new Error(sessionExpired());
         refreshed = true;
         await dropClient(client);
-        if (!(await refreshAccessToken())) throw new Error(SESSION_EXPIRED);
+        if (!(await refreshAccessToken())) throw new Error(sessionExpired());
         continue;
       }
       if (!isTransientTransportError(err) || ++transientRetries > 2) {
